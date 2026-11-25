@@ -11,6 +11,7 @@ which is included as part of this source code package.
 */
 
 #include "LIVMapper.h"
+#include <stdexcept>
 #include <vikit/camera_loader.h>
 
 using namespace Sophus;
@@ -73,6 +74,10 @@ void LIVMapper::readParameters(rclcpp::Node::SharedPtr &node)
   try_declare.template operator()<int>("common.img_en", 1);
   try_declare.template operator()<int>("common.lidar_en", 1);
   try_declare.template operator()<std::string>("common.img_topic", "/left_camera/image");
+  try_declare.template operator()<int>("common.lidar_queue_depth", 200000);
+  try_declare.template operator()<int>("common.imu_queue_depth", 200000);
+  try_declare.template operator()<int>("common.image_queue_depth", 200000);
+  try_declare.template operator()<bool>("common.reliable_input_qos", true);
 
   try_declare.template operator()<bool>("vio.normal_en", true);
   try_declare.template operator()<bool>("vio.inverse_composition_en", false);
@@ -131,6 +136,19 @@ void LIVMapper::readParameters(rclcpp::Node::SharedPtr &node)
   this->node->get_parameter("common.img_en", img_en);
   this->node->get_parameter("common.lidar_en", lidar_en);
   this->node->get_parameter("common.img_topic", img_topic);
+  this->node->get_parameter("common.lidar_queue_depth", lidar_queue_depth);
+  this->node->get_parameter("common.imu_queue_depth", imu_queue_depth);
+  this->node->get_parameter("common.image_queue_depth", image_queue_depth);
+  this->node->get_parameter("common.reliable_input_qos", reliable_input_qos);
+  if (lidar_queue_depth <= 0 || imu_queue_depth <= 0 || image_queue_depth <= 0)
+  {
+    throw std::invalid_argument("FAST-LIVO2 input queue depths must be positive");
+  }
+  RCLCPP_INFO(
+    this->node->get_logger(),
+    "Input QoS: reliability=%s lidar_depth=%d imu_depth=%d image_depth=%d",
+    reliable_input_qos ? "reliable" : "best_effort",
+    lidar_queue_depth, imu_queue_depth, image_queue_depth);
 
   this->node->get_parameter("vio.normal_en", normal_en);
   this->node->get_parameter("vio.inverse_composition_en", inverse_composition_en);
@@ -266,13 +284,28 @@ void LIVMapper::initializeFiles()
 void LIVMapper::initializeSubscribersAndPublishers(rclcpp::Node::SharedPtr &node, image_transport::ImageTransport &it_)
 {
   image_transport::ImageTransport it(this->node);
-  if (p_pre->lidar_type == AVIA) {
-    sub_pcl = this->node->create_subscription<livox_ros_driver2::msg::CustomMsg>(lid_topic, 200000, std::bind(&LIVMapper::livox_pcl_cbk, this, std::placeholders::_1));
-  } else {
-    sub_pcl = this->node->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, 200000, std::bind(&LIVMapper::standard_pcl_cbk, this, std::placeholders::_1));
+  auto lidar_qos = rclcpp::QoS(rclcpp::KeepLast(lidar_queue_depth));
+  auto imu_qos = rclcpp::QoS(rclcpp::KeepLast(imu_queue_depth));
+  auto image_qos = rclcpp::QoS(rclcpp::KeepLast(image_queue_depth));
+  if (reliable_input_qos)
+  {
+    lidar_qos.reliable();
+    imu_qos.reliable();
+    image_qos.reliable();
   }
-  sub_imu = this->node->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 200000, std::bind(&LIVMapper::imu_cbk, this, std::placeholders::_1));
-  sub_img = this->node->create_subscription<sensor_msgs::msg::Image>(img_topic, 200000, std::bind(&LIVMapper::img_cbk, this, std::placeholders::_1));
+  else
+  {
+    lidar_qos.best_effort();
+    imu_qos.best_effort();
+    image_qos.best_effort();
+  }
+  if (p_pre->lidar_type == AVIA) {
+    sub_pcl = this->node->create_subscription<livox_ros_driver2::msg::CustomMsg>(lid_topic, lidar_qos, std::bind(&LIVMapper::livox_pcl_cbk, this, std::placeholders::_1));
+  } else {
+    sub_pcl = this->node->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, lidar_qos, std::bind(&LIVMapper::standard_pcl_cbk, this, std::placeholders::_1));
+  }
+  sub_imu = this->node->create_subscription<sensor_msgs::msg::Imu>(imu_topic, imu_qos, std::bind(&LIVMapper::imu_cbk, this, std::placeholders::_1));
+  sub_img = this->node->create_subscription<sensor_msgs::msg::Image>(img_topic, image_qos, std::bind(&LIVMapper::img_cbk, this, std::placeholders::_1));
   
   pubLaserCloudFullRes = this->node->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 100);
   pubNormal = this->node->create_publisher<visualization_msgs::msg::MarkerArray>("/visualization_marker", 100);

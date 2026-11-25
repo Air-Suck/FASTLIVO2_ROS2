@@ -76,6 +76,8 @@ public:
   
   string root_dir;
   string lid_topic, imu_topic, seq_name, img_topic;
+  int lidar_queue_depth = 200000, imu_queue_depth = 200000, image_queue_depth = 200000;
+  bool reliable_input_qos = true;
   V3D extT;
   M3D extR;
 
